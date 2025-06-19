@@ -1,34 +1,91 @@
 import os
 import re
+import sys
 import time
+import json # json 모듈 추가
 import requests
 from googleapiclient.discovery import build
 
 # --- 설정 부분 ---
-# 사용자 정보로 변경 ㄱ
-YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY") # 유튜브 API 키
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL") # 디스코드 웹훅 URL
-TARGET_CHANNEL_ID = os.environ.get("TARGET_CHANNEL_ID") # 감시할 유튜브 채널 ID
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-# 체크 간격 (초 단위, 너무 짧으면 API 제한에 걸림)
-CHECK_INTERVAL_SECONDS = 600 # 10분
+# 감시할 채널들을 쉼표로 구분하여 입력 (@핸들 또는 채널ID)
+TARGET_CHANNELS = os.environ.get("TARGET_CHANNELS")
 
-# --- 전역 변수 ---
-# 가장 최근에 확인된 영상 ID를 저장할 파일
-LAST_VIDEO_ID_FILE = "last_video_id.txt"
+# 체크 간격 (초 단위)
+CHECK_INTERVAL_SECONDS = 300 # 5분
 
-def get_last_video_id():
-    """파일에서 마지막으로 확인한 영상 ID를 읽음"""
-    if not os.path.exists(LAST_VIDEO_ID_FILE):
+# 상태 저장 파일 이름
+STATE_FILE = "channel_states.json"
+
+# --- 상태 관리 함수 ---
+def load_channel_states():
+    """JSON 파일에서 채널별 마지막 영상 ID 상태를 불러옴"""
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        print(f"경고: {STATE_FILE}이 비어있거나 손상되었습니다. 새로운 상태 파일을 생성합니다.")
+        return {}
+
+def save_channel_states(states):
+    """채널 상태를 JSON 파일에 저장"""
+    with open(STATE_FILE, "w") as f:
+        json.dump(states, f, indent=4)
+
+# --- 식별자 변환 및 정보 조회 함수 ---
+def get_channel_id_from_handle(handle, youtube):
+    """@핸들을 사용하여 채널 ID를 조회"""
+    if handle.startswith('@'):
+        handle = handle[1:]
+    try:
+        search_response = youtube().list(q=handle, type='channel', part='id', maxResults=1).execute()
+        if not search_response.get('items'):
+            return None
+        return search_response['items'][0]['id']['channelId']
+    except Exception as e:
+        print(f"'{handle}' 핸들 조회 중 오류 발생: {e}")
         return None
-    with open(LAST_VIDEO_ID_FILE, "r") as f:
-        return f.read().strip()
 
-def save_last_video_id(video_id):
-    """새로운 영상 ID를 파일에 저장"""
-    with open(LAST_VIDEO_ID_FILE, "w") as f:
-        f.write(video_id)
+def resolve_identifier_to_id(identifier, youtube):
+    """@핸들 또는 채널ID를 받아 최종 채널ID를 반환"""
+    identifier = identifier.strip()
+    if not identifier:
+        return None
+    
+    if identifier.startswith('@'):
+        print(f"'{identifier}' 핸들을 채널 ID로 변환..")
+        channel_id = get_channel_id_from_handle(identifier, youtube)
+        if channel_id:
+            print(f" -> 변환 성공: {channel_id}")
+        else:
+            print(f" -> 변환 실패: 채널을 찾을 수 없습니다.")
+        return channel_id
+    elif identifier.startswith('UC'):
+        print(f"'{identifier}'는 채널 ID입니다. 그대로 사용합니다.")
+        return identifier
+    else:
+        print(f"경고: '{identifier}'는 알 수 없는 형식의 식별자입니다. 건너뜁니다.")
+        return None
 
+def get_latest_video(channel_id, youtube):
+    """특정 채널 ID의 최신 영상을 가져옴"""
+    try:
+        channel_response = youtube.channels().list(id=channel_id, part='contentDetails').execute()
+        uploads_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+        playlist_response = youtube.playlistItems().list(playlistId=uploads_playlist_id, part='snippet', maxResults=1).execute()
+        if not playlist_response.get('items'):
+            return None
+        return playlist_response['items'][0]['snippet']
+    except Exception as e:
+        print(f"'{channel_id}' 채널의 영상 조회 중 오류 발생: {e}")
+        return None
+
+# --- 디스코드 및 기타 유틸리티 함수 ---
+# unshorten_url, process_description, send_to_discord 함수는 이전과 동일
 def unshorten_url(url):
     """단축 URL을 원래 URL로 변환"""
     try:
@@ -55,36 +112,6 @@ def process_description(description):
             processed_description = processed_description.replace(url, f"{original_url} (원 주소: {url})")
             
     return processed_description
-
-def get_latest_video():
-    """유튜브 API를 사용하여 채널의 최신 영상을 가져옴"""
-    try:
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-
-        # 채널 ID로 채널의 'uploads' 플레이리스트 ID를 가져옴
-        channel_response = youtube.channels().list(
-            id=TARGET_CHANNEL_ID,
-            part='contentDetails'
-        ).execute()
-        
-        uploads_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-
-        # 'uploads' 플레이리스트에서 최신 영상을 1개 가져옴
-        playlist_response = youtube.playlistItems().list(
-            playlistId=uploads_playlist_id,
-            part='snippet',
-            maxResults=1
-        ).execute()
-
-        if not playlist_response.get('items'):
-            return None # 채널에 영상이 없는 경우
-
-        latest_video = playlist_response['items'][0]['snippet']
-        return latest_video
-
-    except Exception as e:
-        print(f"유튜브 API 호출 중 오류 발생: {e}")
-        return None
 
 def send_to_discord(video_info):
     """디스코드 웹훅으로 메시지를 보냄"""
@@ -124,54 +151,73 @@ def send_to_discord(video_info):
     except requests.exceptions.HTTPError as err:
         print(f"디스코드 전송 실패: {err}")
 
+# --- 메인 함수 ---
 def main():
-    """메인 로직: 주기적으로 새 영상을 체크하고 알림을 보냄"""
+    """주요 로직: 여러 채널을 주기적으로 확인하고 알림을 보냄"""
     print("유튜브-디스코드 알림 봇을 시작합니다.")
     
-    last_known_video_id = get_last_video_id()
-    if last_known_video_id:
-        print(f"마지막으로 확인된 영상 ID: {last_known_video_id}")
-    else:
-        # 처음 실행 시, 가장 최신 영상을 ID만 저장하고 알림은 보내지 않음
-        print("처음 실행합니다. 기준이 될 최신 영상을 저장합니다.")
-        latest_video = get_latest_video()
-        if latest_video:
-            video_id = latest_video['resourceId']['videoId']
-            save_last_video_id(video_id)
-            print(f"기준 영상 ID 저장됨: {video_id}")
-        return # 초기화 후 종료, 다음 실행부터 정상 작동
+    if not all([YOUTUBE_API_KEY, DISCORD_WEBHOOK_URL, TARGET_CHANNELS]):
+       print("오류: 환경 변수(YOUTUBE_API_KEY, DISCORD_WEBHOOK_URL, TARGET_CHANNELS)가 올바르게 설정되지 않았습니다.")
+       sys.exit(1)
+
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    
+    # 설정된 채널 목록을 최종 채널 ID 목록으로 변환
+    initial_targets = [identifier.strip() for identifier in TARGET_CHANNELS.split(',')]
+    resolved_channel_ids = []
+    for identifier in initial_targets:
+        channel_id = resolve_identifier_to_id(identifier, youtube)
+        if channel_id:
+            resolved_channel_ids.append(channel_id)
+    
+    if not resolved_channel_ids:
+        print("감시할 유효한 채널이 없습니다. 봇을 종료합니다.")
+        sys.exit(1)
+        
+    print("-" * 20)
+    print(f"감시를 시작할 채널 목록 ({len(resolved_channel_ids)}개):")
+    for cid in resolved_channel_ids:
+        print(f"- {cid}")
+    print("-" * 20)
 
     while True:
-        latest_video = get_latest_video()
+        states = load_channel_states()
+        states_updated = False
 
-        if latest_video:
-            current_video_id = latest_video['resourceId']['videoId']
+        for channel_id in resolved_channel_ids:
+            print(f"\n--- '{channel_id}' 채널 확인 중 ---")
+            latest_video = get_latest_video(channel_id, youtube)
             
+            if not latest_video:
+                print("최신 영상을 가져올 수 없거나 채널에 영상이 없습니다.")
+                continue
+
+            current_video_id = latest_video['resourceId']['videoId']
+            last_known_video_id = states.get(channel_id)
+
+            # 해당 채널을 처음 확인하는 경우
+            if last_known_video_id is None:
+                print(f"'{channel_id}' 채널을 처음 확인합니다. 기준 영상 ID를 저장합니다: {current_video_id}")
+                states[channel_id] = current_video_id
+                states_updated = True
+                continue
+
+            # 새로운 영상이 올라온 경우
             if current_video_id != last_known_video_id:
-                # 새로운 영상이 올라옴
+                print(f"!!! 새로운 영상 발견 !!! (이전: {last_known_video_id}, 현재: {current_video_id})")
                 send_to_discord(latest_video)
-                save_last_video_id(current_video_id)
-                last_known_video_id = current_video_id
+                states[channel_id] = current_video_id
+                states_updated = True
             else:
-                # 새로운 영상이 없음
-                print(f"새 영상 없음. 마지막 확인 ID: {current_video_id}")
+                print("새로운 영상이 없습니다.")
         
-        print(f"{CHECK_INTERVAL_SECONDS}초 후에 다시 확인합니다.")
+        if states_updated:
+            print("\n상태 파일 업데이트 중...")
+            save_channel_states(states)
+            print("상태 파일 업데이트 완료.")
+
+        print(f"\n모든 채널 확인 완료. {CHECK_INTERVAL_SECONDS}초 후에 다시 확인합니다.")
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    # 설정값이 비어있는지 확인
-    if not all([YOUTUBE_API_KEY, DISCORD_WEBHOOK_URL, TARGET_CHANNEL_ID]) or \
-       "YOUR_" in YOUTUBE_API_KEY or "YOUR_" in DISCORD_WEBHOOK_URL or "YOUR_" in TARGET_CHANNEL_ID:
-        print("오류: 코드의 설정 부분(YOUTUBE_API_KEY, DISCORD_WEBHOOK_URL, TARGET_CHANNEL_ID)을 올바르게 채워주세요.")
-    else:
-        # 최초 실행 시 초기화 로직을 위해 main()을 한 번 호출
-        main_instance_running = False
-        if not os.path.exists(LAST_VIDEO_ID_FILE):
-             main() # 초기화 실행
-        else:
-             main_instance_running = True
-        
-        # 실제 반복 실행
-        if main_instance_running:
-            main()
+    main()
