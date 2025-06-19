@@ -1,0 +1,5 @@
+# .gitignore
+__pycache__/
+*.pyc
+last_video_id.txt
+.env
