@@ -6,9 +6,9 @@ from googleapiclient.discovery import build
 
 # --- 설정 부분 ---
 # 사용자 정보로 변경 ㄱ
-YOUTUBE_API_KEY = "YOUR_YOUTUBE_API_KEY"  # 유튜브 API 키
-DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL" # 디스코드 웹훅 URL
-TARGET_CHANNEL_ID = "YOUR_TARGET_CHANNEL_ID" # 감시할 유튜브 채널 ID
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY") # 유튜브 API 키
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL") # 디스코드 웹훅 URL
+TARGET_CHANNEL_ID = os.environ.get("TARGET_CHANNEL_ID") # 감시할 유튜브 채널 ID
 
 # 체크 간격 (초 단위, 너무 짧으면 API 제한에 걸림)
 CHECK_INTERVAL_SECONDS = 600 # 10분
