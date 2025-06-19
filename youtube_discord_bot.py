@@ -37,12 +37,19 @@ def save_channel_states(states):
         json.dump(states, f, indent=4)
 
 # --- 식별자 변환 및 정보 조회 함수 ---
-def get_channel_id_from_handle(handle, youtube):
+def get_channel_id_from_handle(handle, youtube_service):
     """@핸들을 사용하여 채널 ID를 조회"""
     if handle.startswith('@'):
         handle = handle[1:]
     try:
-        search_response = youtube().list(q=handle, type='channel', part='id', maxResults=1).execute()
+        # 이 부분이 올바르게 수정되었습니다. .list()가 추가되었습니다.
+        search_response = youtube_service.search().list(
+            q=handle,
+            type='channel',
+            part='id',
+            maxResults=1
+        ).execute()
+        
         if not search_response.get('items'):
             return None
         return search_response['items'][0]['id']['channelId']
@@ -50,15 +57,15 @@ def get_channel_id_from_handle(handle, youtube):
         print(f"'{handle}' 핸들 조회 중 오류 발생: {e}")
         return None
 
-def resolve_identifier_to_id(identifier, youtube):
+def resolve_identifier_to_id(identifier, youtube_service):
     """@핸들 또는 채널ID를 받아 최종 채널ID를 반환"""
     identifier = identifier.strip()
     if not identifier:
         return None
     
     if identifier.startswith('@'):
-        print(f"'{identifier}' 핸들을 채널 ID로 변환..")
-        channel_id = get_channel_id_from_handle(identifier, youtube)
+        print(f"'{identifier}' 핸들을 채널 ID로 변환합니다...")
+        channel_id = get_channel_id_from_handle(identifier, youtube_service)
         if channel_id:
             print(f" -> 변환 성공: {channel_id}")
         else:
@@ -71,12 +78,12 @@ def resolve_identifier_to_id(identifier, youtube):
         print(f"경고: '{identifier}'는 알 수 없는 형식의 식별자입니다. 건너뜁니다.")
         return None
 
-def get_latest_video(channel_id, youtube):
-    """특정 채널 ID의 최신 영상을 가져옴"""
+def get_latest_video(channel_id, youtube_service):
+    """특정 채널 ID의 최신 영상을 가져옵니다."""
     try:
-        channel_response = youtube.channels().list(id=channel_id, part='contentDetails').execute()
+        channel_response = youtube_service.channels().list(id=channel_id, part='contentDetails').execute()
         uploads_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-        playlist_response = youtube.playlistItems().list(playlistId=uploads_playlist_id, part='snippet', maxResults=1).execute()
+        playlist_response = youtube_service.playlistItems().list(playlistId=uploads_playlist_id, part='snippet', maxResults=1).execute()
         if not playlist_response.get('items'):
             return None
         return playlist_response['items'][0]['snippet']
@@ -153,69 +160,42 @@ def send_to_discord(video_info):
 
 # --- 메인 함수 ---
 def main():
-    """주요 로직: 여러 채널을 주기적으로 확인하고 알림을 보냄"""
-    print("유튜브-디스코드 알림 봇을 시작합니다.")
+    print("다중 채널 유튜브-디스코드 알림 봇을 시작합니다.")
     
     if not all([YOUTUBE_API_KEY, DISCORD_WEBHOOK_URL, TARGET_CHANNELS]):
        print("오류: 환경 변수(YOUTUBE_API_KEY, DISCORD_WEBHOOK_URL, TARGET_CHANNELS)가 올바르게 설정되지 않았습니다.")
        sys.exit(1)
 
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    youtube_service = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
     
-    # 설정된 채널 목록을 최종 채널 ID 목록으로 변환
     initial_targets = [identifier.strip() for identifier in TARGET_CHANNELS.split(',')]
     resolved_channel_ids = []
+    print("설정된 채널들의 ID를 확인합니다...")
     for identifier in initial_targets:
-        channel_id = resolve_identifier_to_id(identifier, youtube)
-        if channel_id:
-            resolved_channel_ids.append(channel_id)
+        if not identifier: continue
+        channel_id = resolve_identifier_to_id(identifier, youtube_service)
+        if channel_id: resolved_channel_ids.append(channel_id)
     
-    if not resolved_channel_ids:
-        print("감시할 유효한 채널이 없습니다. 봇을 종료합니다.")
-        sys.exit(1)
+    if not resolved_channel_ids: print("감시할 유효한 채널이 없습니다. 봇을 종료합니다."); sys.exit(1)
         
-    print("-" * 20)
-    print(f"감시를 시작할 채널 목록 ({len(resolved_channel_ids)}개):")
-    for cid in resolved_channel_ids:
-        print(f"- {cid}")
-    print("-" * 20)
+    print("-" * 30); print(f"감시를 시작할 채널 목록 ({len(resolved_channel_ids)}개):"); [print(f"- {cid}") for cid in resolved_channel_ids]; print("-" * 30)
 
     while True:
-        states = load_channel_states()
-        states_updated = False
-
+        states = load_channel_states(); states_updated = False
         for channel_id in resolved_channel_ids:
             print(f"\n--- '{channel_id}' 채널 확인 중 ---")
-            latest_video = get_latest_video(channel_id, youtube)
-            
-            if not latest_video:
-                print("최신 영상을 가져올 수 없거나 채널에 영상이 없습니다.")
-                continue
-
-            current_video_id = latest_video['resourceId']['videoId']
-            last_known_video_id = states.get(channel_id)
-
-            # 해당 채널을 처음 확인하는 경우
+            latest_video = get_latest_video(channel_id, youtube_service)
+            if not latest_video: print("최신 영상을 가져올 수 없거나 채널에 영상이 없습니다."); continue
+            current_video_id = latest_video['resourceId']['videoId']; last_known_video_id = states.get(channel_id)
             if last_known_video_id is None:
                 print(f"'{channel_id}' 채널을 처음 확인합니다. 기준 영상 ID를 저장합니다: {current_video_id}")
-                states[channel_id] = current_video_id
-                states_updated = True
-                continue
-
-            # 새로운 영상이 올라온 경우
+                states[channel_id] = current_video_id; states_updated = True; continue
             if current_video_id != last_known_video_id:
                 print(f"!!! 새로운 영상 발견 !!! (이전: {last_known_video_id}, 현재: {current_video_id})")
-                send_to_discord(latest_video)
-                states[channel_id] = current_video_id
-                states_updated = True
-            else:
-                print("새로운 영상이 없습니다.")
+                send_to_discord(latest_video); states[channel_id] = current_video_id; states_updated = True
+            else: print("새로운 영상이 없습니다.")
         
-        if states_updated:
-            print("\n상태 파일 업데이트 중...")
-            save_channel_states(states)
-            print("상태 파일 업데이트 완료.")
-
+        if states_updated: print("\n상태 파일 업데이트 중..."); save_channel_states(states); print("상태 파일 업데이트 완료.")
         print(f"\n모든 채널 확인 완료. {CHECK_INTERVAL_SECONDS}초 후에 다시 확인합니다.")
         time.sleep(CHECK_INTERVAL_SECONDS)
 
