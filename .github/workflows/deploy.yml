@@ -1,0 +1,50 @@
+# .github/workflows/deploy.yml
+name: Deploy YouTube Bot to EC2
+
+on:
+  push:
+    branches:
+      - main # main 브랜치에 push 될 때마다 이 워크플로우를 실행
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest # 이 워크플로우는 우분투 환경에서 실행됨
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # 프로젝트 디렉토리로 이동. 없으면 GitHub에서 클론.
+            if [ ! -d "/home/${{ secrets.EC2_USERNAME }}/youtube-discord-bot" ]; then
+              git clone https://github.com/${{ github.repository }}.git /home/${{ secrets.EC2_USERNAME }}/youtube-discord-bot
+            fi
+            cd /home/${{ secrets.EC2_USERNAME }}/youtube-discord-bot
+
+            # 최신 코드로 업데이트
+            git pull origin main
+
+            # 파이썬 라이브러리 설치
+            pip3 install -r requirements.txt
+
+            # systemd 서비스에 환경 변수 설정
+            # 기존 서비스 파일에 환경 변수를 동적으로 추가/수정합니다.
+            # Secrets 값을 파일에 직접 쓰지 않고 systemd를 통해 주입하여 보안 강화.
+            sudo sed -i '/^Environment=/d' /etc/systemd/system/youtube-bot.service
+            sudo sed -i '/^\[Service\]/a Environment="YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}"' /etc/systemd/system/youtube-bot.service
+            sudo sed -i '/^\[Service\]/a Environment="DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}"' /etc/systemd/system/youtube-bot.service
+            sudo sed -i '/^\[Service\]/a Environment="TARGET_CHANNEL_ID=${{ secrets.TARGET_CHANNEL_ID }}"' /etc/systemd/system/youtube-bot.service
+
+            # systemd 데몬 리로드 및 봇 재시작
+            sudo systemctl daemon-reload
+            sudo systemctl restart youtube-bot.service
+
+            # 서비스 상태 확인 (선택사항, 로그 확인에 유용)
+            sudo systemctl status youtube-bot.service
