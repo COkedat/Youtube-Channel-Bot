@@ -92,14 +92,19 @@ def get_latest_video(channel_id, youtube_service):
         return None
 
 # --- 디스코드 및 기타 유틸리티 함수 ---
-# unshorten_url, process_description, send_to_discord 함수는 이전과 동일
+# unshorten_url, process_description, send_to_discord 함수는 이전과 동일함
 def unshorten_url(url):
     """단축 URL을 원래 URL로 변환"""
     try:
         # allow_redirects=True (기본값)를 사용하여 리디렉션을 따라감
         # 헤더만 요청하여 더 빠르고 효율적임
         response = requests.head(url, allow_redirects=True, timeout=5)
-        return response.url
+        # 쿼리스트링 존재하면 제거함
+        # (너무 길게 나오더라)
+        if response.url.count("?") > 0:
+            return response.url.split("?")[0]
+        else:
+            return response.url
     except requests.RequestException:
         # 오류 발생 시 원래 URL 반환
         return url
