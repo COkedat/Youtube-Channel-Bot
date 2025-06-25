@@ -101,10 +101,12 @@ def unshorten_url(url):
         response = requests.head(url, allow_redirects=True, timeout=5)
         # 쿼리스트링 존재하면 제거함
         # (너무 길게 나오더라)
-        if response.url.count("?") > 0:
+        """if response.url.count("?") > 0:
             return response.url.split("?")[0]
         else:
-            return response.url
+            return response.url"""
+        # 쿼리 스트링 포함해야할 듯 번거롭지만
+        return response.url
     except requests.RequestException:
         # 오류 발생 시 원래 URL 반환
         return url
