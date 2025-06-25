@@ -78,18 +78,22 @@ def resolve_identifier_to_id(identifier, youtube_service):
         print(f"경고: '{identifier}'는 알 수 없는 형식의 식별자입니다. 건너뜁니다.")
         return None
 
-def get_latest_video(channel_id, youtube_service):
-    """특정 채널 ID의 최신 영상을 가져옵니다."""
+def get_recent_videos(channel_id, youtube_service, count):
+    """특정 채널 ID의 최신 영상을 지정된 개수만큼 가져옴"""
     try:
         channel_response = youtube_service.channels().list(id=channel_id, part='contentDetails').execute()
         uploads_playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-        playlist_response = youtube_service.playlistItems().list(playlistId=uploads_playlist_id, part='snippet', maxResults=1).execute()
+        playlist_response = youtube_service.playlistItems().list(
+            playlistId=uploads_playlist_id, 
+            part='snippet', 
+            maxResults=count
+        ).execute()
         if not playlist_response.get('items'):
-            return None
-        return playlist_response['items'][0]['snippet']
+            return [] # 영상이 없으면 빈 리스트 반환
+        return playlist_response.get('items', []) # 영상 목록을 반환
     except Exception as e:
         print(f"'{channel_id}' 채널의 영상 조회 중 오류 발생: {e}")
-        return None
+        return [] # 오류 발생 시 빈 리스트 반환
 
 # --- 디스코드 및 기타 유틸리티 함수 ---
 # unshorten_url, process_description, send_to_discord 함수는 이전과 동일함
@@ -187,22 +191,60 @@ def main():
         
     print("-" * 30); print(f"감시를 시작할 채널 목록 ({len(resolved_channel_ids)}개):"); [print(f"- {cid}") for cid in resolved_channel_ids]; print("-" * 30)
 
+    # 가져올 영상의 최대 개수
+    FETCH_COUNT = 5
+
     while True:
-        states = load_channel_states(); states_updated = False
+        states = load_channel_states()
+        states_updated = False
+
         for channel_id in resolved_channel_ids:
             print(f"\n--- '{channel_id}' 채널 확인 중 ---")
-            latest_video = get_latest_video(channel_id, youtube_service)
-            if not latest_video: print("최신 영상을 가져올 수 없거나 채널에 영상이 없습니다."); continue
-            current_video_id = latest_video['resourceId']['videoId']; last_known_video_id = states.get(channel_id)
+            
+            # [로직 변경] 새로운 함수를 호출하여 최신 영상 '목록'을 가져옴
+            recent_videos = get_recent_videos(channel_id, youtube_service, FETCH_COUNT)
+            if not recent_videos:
+                print("최신 영상을 가져올 수 없거나 채널에 영상이 없습니다.")
+                continue
+
+            last_known_video_id = states.get(channel_id)
+            
+            # 해당 채널을 처음 확인하는 경우
             if last_known_video_id is None:
-                print(f"'{channel_id}' 채널을 처음 확인합니다. 기준 영상 ID를 저장합니다: {current_video_id}")
-                states[channel_id] = current_video_id; states_updated = True; continue
-            if current_video_id != last_known_video_id:
-                print(f"!!! 새로운 영상 발견 !!! (이전: {last_known_video_id}, 현재: {current_video_id})")
-                send_to_discord(latest_video); states[channel_id] = current_video_id; states_updated = True
-            else: print("새로운 영상이 없습니다.")
+                newest_video_id = recent_videos[0]['snippet']['resourceId']['videoId']
+                print(f"'{channel_id}' 채널을 처음 확인합니다. 기준 영상 ID를 저장합니다: {newest_video_id}")
+                states[channel_id] = newest_video_id
+                states_updated = True
+                continue
+
+            # [로직 변경] 새로운 영상들을 감지함
+            new_videos = []
+            try:
+                # 마지막으로 본 영상이 목록의 몇 번째에 있는지 찾아봄
+                last_seen_index = [v['snippet']['resourceId']['videoId'] for v in recent_videos].index(last_known_video_id)
+                # 마지막으로 본 영상보다 최신인 영상들(목록의 더 앞쪽)을 모두 new_videos에 추가함
+                new_videos = recent_videos[:last_seen_index]
+            except ValueError:
+                # 마지막으로 본 영상이 최근 목록에 없으면, 가져온 목록 전체를 새로운 것으로 간주
+                print(f"경고: 마지막 확인 영상({last_known_video_id})이 최신 {FETCH_COUNT}개 목록에 없습니다. {FETCH_COUNT}개 영상을 모두 새 영상으로 처리합니다.")
+                new_videos = recent_videos
+
+            if new_videos:
+                print(f"!!! {len(new_videos)}개의 새로운 영상을 발견했습니다 !!!")
+                # 알림은 오래된 순 -> 최신 순으로 보내는 것이 자연스러우므로 목록을 뒤집어 순서대로 보냄
+                for video_item in reversed(new_videos):
+                    send_to_discord(video_item['snippet'])
+                
+                # 가장 최신 영상의 ID를 새로운 상태로 저장
+                newest_video_id = new_videos[0]['snippet']['resourceId']['videoId']
+                states[channel_id] = newest_video_id
+                states_updated = True
+            else:
+                print("새로운 영상이 없습니다.")
         
-        if states_updated: print("\n상태 파일 업데이트 중..."); save_channel_states(states); print("상태 파일 업데이트 완료.")
+        if states_updated:
+            save_channel_states(states)
+        
         print(f"\n모든 채널 확인 완료. {CHECK_INTERVAL_SECONDS}초 후에 다시 확인합니다.")
         time.sleep(CHECK_INTERVAL_SECONDS)
 
