@@ -14,7 +14,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 TARGET_CHANNELS = os.environ.get("TARGET_CHANNELS")
 
 # 체크 간격 (초 단위)
-CHECK_INTERVAL_SECONDS = 300 # 5분
+CHECK_INTERVAL_SECONDS = 1200 # 5분
 
 # 상태 저장 파일 이름
 STATE_FILE = "channel_states.json"
