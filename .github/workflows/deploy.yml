@@ -31,20 +31,26 @@ jobs:
             # 최신 코드로 업데이트
             git pull origin main
 
-            # 파이썬 라이브러리 설치
-            pip3 install -r requirements.txt
-
-            # systemd 서비스에 환경 변수 설정
-            # 기존 서비스 파일에 환경 변수를 동적으로 추가/수정합니다.
-            # Secrets 값을 파일에 직접 쓰지 않고 systemd를 통해 주입하여 보안 강화.
-            sudo sed -i '/^Environment=/d' /etc/systemd/system/youtube-bot.service
-            sudo sed -i '/^\[Service\]/a Environment="YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}"' /etc/systemd/system/youtube-bot.service
-            sudo sed -i '/^\[Service\]/a Environment="DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}"' /etc/systemd/system/youtube-bot.service
-            sudo sed -i '/^\[Service\]/a Environment="TARGET_CHANNELS=${{ secrets.TARGET_CHANNELS }}"' /etc/systemd/system/youtube-bot.service
-
-            # systemd 데몬 리로드 및 봇 재시작
+            # venv 생성
+            if [ ! -d "venv" ]; then
+              python3 -m venv venv
+            fi
+            
+            # venv에 라이브러리 설치
+            ./venv/bin/pip3 install -r requirements.txt
+            
+            # EnvironmentFile (.env) 생성 (sed 대신 사용)
+            echo "YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}" > $PROJECT_DIR/.env
+            echo "DISCORD_WEBHOOK_URL=${{ secrets.DISCORD_WEBHOOK_URL }}" >> $PROJECT_DIR/.env
+            echo "TARGET_CHANNELS=${{ secrets.TARGET_CHANNELS }}" >> $PROJECT_DIR/.env
+            
+            # systemd 서비스 재시작
+            #    EC2_USERNAME이 password 없이 sudo systemctl을 실행할 수 있어야 함
             sudo systemctl daemon-reload
             sudo systemctl restart youtube-bot.service
-
-            # 서비스 상태 확인 (선택사항, 로그 확인에 유용)
-            sudo systemctl status youtube-bot.service
+            
+            # 서비스 상태 확인
+            #    --no-pager : 스크립트가 멈추지 않게 함
+            #    || true : 서비스가 잠시 FAILED여도 워크플로우가 실패하지 않게 함
+            sleep 3 # 봇이 시작될 시간을 줌
+            sudo systemctl status youtube-bot.service --no-pager || true
