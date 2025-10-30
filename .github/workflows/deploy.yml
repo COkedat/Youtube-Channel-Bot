@@ -37,7 +37,7 @@ jobs:
             fi
             
             # venv에 라이브러리 설치
-            ./venv/bin/pip3 install -r requirements.txt
+            ./venv/bin/python3 -m pip install -r requirements.txt
             
             # EnvironmentFile (.env) 생성 (sed 대신 사용)
             echo "YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}" > $PROJECT_DIR/.env
